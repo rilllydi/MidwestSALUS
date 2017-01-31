@@ -5,14 +5,10 @@ options(warn=1)
 
 # Arguments: state, scenario, results folder, variable (summary or yearly variable), outdirectory for raster
 # test if there is are 4 arguments: if not, return an error
-if (length(args) != 5) {
-  stop("5 arguments must be supplied (st, SC, resfolder, resvar, outdir)", call.=FALSE)
+if (length(args) != 1) {
+  stop("1 argument must be supplied (state)", call.=FALSE)
 } else {
   st <- args[1]
-  SC <- args[2]
-  resfolder <- args[3]
-  resvar <- args[4]
-  outdir <- args[5]
 }
 
 # This script extracts data from the Soil/CDL raster. It also uses the Weather polygon shapefile to determine weather grid points for each raster pixel.
@@ -42,7 +38,6 @@ if (length(args) != 5) {
 # Then create a raster based on ID
 # (.tif and .tif.vat.dbf)
 
-
 library(sp) # already installed
 library(raster) # installed
 
@@ -60,80 +55,97 @@ myfunc <- function(inraster){
   print(inraster)
   # Read the raster
   r <- raster(inraster)
-  #print("read raster")
   #str(r) # To get more information about the raster
   r <- ratify(r)
-  rat <- levels(r)[[1]]
-  dbf_file <- gsub(".TIF",".TIF.vat.dbf",inraster)
+  rat <- levels(r)[[1]] # get the raster attribute table from the raster 
+  dbf_file <- gsub(".TIF",".TIF.vat.dbf",inraster) # read the .vat.dbf file which contains the raster attributes
   mu <- read.dbf(dbf_file, as.is=TRUE)
-  names(mu)[toupper(names(mu)) == 'VALUE'] <- 'ID'
+  names(mu)[toupper(names(mu)) == 'VALUE'] <- 'ID' # some rasters have Value, some VALUE so compare upper case
   mu$MUKEY <- as.integer(mu$MUKEY)
-  #print("read vat.dbf")
-  #print("mu:")
+  #print("mu") # looks ok!
   #print(head(mu))
+  #print(head(rat))
   
-  rat.new <- join(rat, mu, by='ID', type='left')
-  levels(r) <- rat.new
+  rat.new <- join(rat, mu, by='ID', type='left') # join the actual attributes with the rat
+  levels(r) <- rat.new # set the joined dataframe as the rat for the raster
+  #print("RAT NEW")
+  #print(head(rat.new)) # looks ok!
   
   r.mu <- deratify(r, att='MUKEY') # THIS IS CORRECT!
-  #print("deratified")
+  #print("R.MU")
+  #print(r.mu) # this looks ok!
   
   MUKEY<-extract(r.mu,1:ncell(r.mu))
+  #print("MUKEY")
+  #print(MUKEY)
   coord<-xyFromCell(r.mu,1:ncell(r.mu))
-  pixels<-as.data.table(cbind(coord,MUKEY))
-  #print("extracted pixels")
+  pixels<-as.data.table(cbind(coord,MUKEY)) # define the pixels (coordinate and MUKEY value)
+  #print("HSOULD HAVE MUKEY")
+  #print(head(pixels))
   
   ##########################
+  #b <- pixels
   
-  coordinates(pixels) <- c("x", "y")
+  coordinates(pixels) <- c("x", "y") # make this data table spatial 
   proj4string(pixels) <- proj4string(poly)
-  df <- over(pixels, poly)
-  print("done intersecting")
-  pixels <- as.data.table(as.data.frame(pixels))
-  pixels[,wx_x:=df$CENTROID_X]
-  pixels[,wx_y:=df$CENTROID_Y]
-  #print("make sure decimal points are exactly the same!")
-  #print(head(pixels))
-  #print(head(SALUSres))
+  df <- over(pixels, poly) # intersect the pixels with the Weather polygon to determine the closest weather grid to each pixel (very slow!)
   
-  setkeyv(pixels,c("MUKEY","wx_y","wx_x")) 
-  setkeyv(SALUSres,c("MUKEY","wxID_y","wxID_x")) 
-  pixels <- SALUSres[pixels] # join the data with the SALUS results
+  #bdf <- df
+  
+  pixels <- as.data.table(as.data.frame(pixels))
+  #print(head(df))
+  pixels[,wxID_x:=df$CENTROID_X] # new column with centroids (centroids are already columns in the df (they are not being calculated in this script))
+  pixels[,wxID_y:=df$CENTROID_Y]
+  #print(head(df$CENTROID_X))
+  #print("Centroids")
+  #print(head(pixels)) # looks ok
+  #print(head(pixels))
   
   # Create unique ID for each pixel.
-  rat <- pixels[complete.cases(pixels),]
-  print("rat from pixels no missing")
+  rat <- pixels[complete.cases(pixels),] # return pixels with no missing values!
+  #print("HERE BEFORE")
+  #print(nrow(rat))
   #print(head(rat))
-  print(nrow(rat))
-  rat[,c("x","y"):=NULL]
+  rat[,c("x","y"):=NULL] # remove columns x and y
+  #ratb <- rat
   setkeyv(rat,c("MUKEY","wxID_y","wxID_x")) 
   rat[ , Value := .GRP, by = key(rat)]
   setkeyv(rat,"Value") 
   rat <- unique(rat) # attribute table
+  #print("first rat")
+  #print(nrow(rat))
+  #print(head(rat))
   
+  #ratp <- rat
+  
+  # Format the RAT so that arcgis can read it (need unique ID, Value, and Count)
   # Join the unID with the raster (pixels)
-  ratID <- rat[,c("Value","MUKEY","wxID_y","wxID_x"),with = FALSE]
+  ratID <- rat[,c("Value","MUKEY","wxID_y","wxID_x"),with = FALSE] #create ratID
   setkeyv(ratID,c("MUKEY","wxID_y","wxID_x"))
   setkeyv(pixels,c("MUKEY","wxID_y","wxID_x"))
   pixels <- ratID[pixels]
   pixels[,Count:=.N, by=Value]
   
-  #print("here after pixels")
   setkeyv(rat,c("MUKEY","wxID_y","wxID_x"))
   pixels2 <- pixels[,c("MUKEY","wxID_y","wxID_x","Count"),with = FALSE]
   setkeyv(pixels2,c("MUKEY","wxID_y","wxID_x"))
   pixels2 <- unique(pixels2)
   rat <- pixels2[rat]
-  #print("here after pixels2")
   
+  #print("third rat")
+  #print(head(rat))
+  
+  # need a Count and Value column for ArcGIS to read the raster correctly
   setcolorder(rat, c("Count",colnames(rat)[!(colnames(rat) %in% c("Count"))]))
   setcolorder(rat, c("Value",colnames(rat)[!(colnames(rat) %in% c("Value"))]))
-
-  print("about to create raster")
+  #print("REORDERED RAT")
+  #print(head(rat))
+  
   ras <- rasterFromXYZ(pixels[,c("x", "y", "Value"),with = FALSE])
   projection(ras) <- mycrs
-
-  #print("done creating raster")
+  
+  #print("rasterized!")
+  #return (list(ras,rat,rat2))
   return (list(ras,rat))
   
 }
@@ -141,15 +153,10 @@ myfunc <- function(inraster){
 
 # Shapefile Data
 
-
 #st <- 'ia'
-#SC <- 'SC1'
-#resfolder <- "Summary_1979_2016"
-#resvar <- "summary" # "yearly_GWAD"
 
 rootdir <- "/mnt/home/rilllydi/Midwest/Soils_in_CDL/"
-outdir <- paste("/mnt/home/rilllydi/Midwest/Results/",outdir,sep="")
-csvfolder <- paste("/mnt/home/rilllydi/Midwest/Results/",resfolder,"/",sep="")
+outdir <- "/mnt/home/rilllydi/Midwest/Results/Baseline_Rasters/"
 wxpoly <- "/mnt/home/rilllydi/Midwest/WeatherPoly/"
 
 wxname <- paste(wxpoly,st,"_WxPoly.shp",sep="")
@@ -163,43 +170,28 @@ folder <- paste(rootdir,st,"_split_55/",sep="")
 inraster <- list.files(folder, pattern="*.TIF$", full.names=TRUE)
 #print(inraster)
 
-############################ Read and add the SALUS results to the data frame
-chunkpatt = paste(st,"_._",SC,"_",resvar,".csv$",sep="") # get all chunks
-inSALUS <- list.files(csvfolder, pattern=chunkpatt, full.names=TRUE)
-SALUStables <- list()
-#print(inSALUS)
- 
-# Read as data table
-rfun <- function(inSALUS){
-  dat <- fread(inSALUS, header=TRUE)
-  return(dat)
-}
-
-SALUStables <- lapply(inSALUS,rfun)
-
-SALUSres <- rbindlist(SALUStables)
-#print("read")
-
 ####################
 result <- list()
-
-print("about to go to function")
+  
 result <- lapply(inraster, myfunc)
-print("done with function")
-
+  
 rasters <- lapply(result,"[[", 1) 
 ratlist <- lapply(result,"[[", 2) 
-
-rout <- paste(outdir,st,"_",resvar,".TIF",sep="")
+  
+rout <- paste(outdir,st,"_base.TIF",sep="")
 ratout <- gsub(".TIF",".TIF.vat.dbf",rout)
 
+#print("HERE")
+#print(rasters)
 # mosaic rasters together and write
 st.mosaicargs <- rasters
 st.mosaicargs$fun <- mean
 strast <- do.call(mosaic, st.mosaicargs)
-print("about to write raster")
+#print("about to write raster")
 writeRaster(strast, rout, datatype='INT2S', overwrite=TRUE)
 
-print("about to write RAT")
+#print("about to write rat")
 rat <- rbindlist(ratlist)
 write.dbf(as.data.frame(rat),ratout)
+  
+print("DONE")
